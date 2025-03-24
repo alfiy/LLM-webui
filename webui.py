@@ -4,12 +4,14 @@ import torch
 import gc
 import gradio as gr
 import os
-import chardet  # 用于检测文件编码
+import chardet
+import os
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 
 app = Flask(__name__)
 
 # 加载模型和分词器
-model_name = "Qwen/Qwen2.5-14B-Instruct"
+model_name = "../qwen2.5/qwen2.5-14B-Instruct"
 model = AutoModelForCausalLM.from_pretrained(
     model_name,
     torch_dtype="auto",
@@ -38,7 +40,8 @@ def generate_text(prompt, content):
         with torch.no_grad():
             generated_ids = model.generate(
                 **model_inputs,
-                max_new_tokens=4096,
+                max_new_tokens=2048,
+                #max_new_tokens=4096,
             )
             generated_ids = [
                 output_ids[len(input_ids):] for input_ids, output_ids in zip(model_inputs.input_ids, generated_ids)
@@ -56,32 +59,43 @@ def generate_text(prompt, content):
         gc.collect()
         torch.cuda.empty_cache()
 
+def detect_encoding(file_path):
+    """检测文件编码"""
+    with open(file_path, 'rb') as file:
+        raw_data = file.read()
+    result = chardet.detect(raw_data)
+    return result['encoding']
+
+def read_file_content(file_obj):
+    """根据文件对象读取内容"""
+    if hasattr(file_obj, 'data'):
+        # 如果文件对象包含.data属性，则假设它是已经读取的字节流
+        detected_encoding = chardet.detect(file_obj.data)['encoding']
+        try:
+            return file_obj.data.decode(detected_encoding)
+        except UnicodeDecodeError:
+            return file_obj.data.decode('gb2312', errors='ignore')
+    else:
+        # 假设这是一个本地文件路径
+        detected_encoding = detect_encoding(file_obj.name)
+        try:
+            with open(file_obj.name, 'r', encoding=detected_encoding) as f:
+                return f.read()
+        except UnicodeDecodeError:
+            with open(file_obj.name, 'r', encoding='gb2312', errors='ignore') as f:
+                return f.read()
+
 def process_uploaded_file(file_obj, user_input):
     """
     处理上传的文件，并使用其内容与用户输入结合作为模型的输入。
     """
-    # 固定提示信息
     prompt = "请根据以下文档内容回答问题或提供帮助:"
     
     if file_obj is None:
         content = user_input
     else:
-        # Gradio上传的文件是字典类型，包含文件名和文件数据
-        if hasattr(file_obj, 'data'):
-            file_content = file_obj.data
-        else:
-            with open(file_obj.name, 'rb') as f:  # 以二进制模式打开文件
-                file_content = f.read()
-        
-        # 尝试使用UTF-8解码
-        try:
-            content = file_content.decode('utf-8')
-        except UnicodeDecodeError:
-            # 如果UTF-8解码失败，使用chardet检测编码
-            detected = chardet.detect(file_content)
-            encoding = detected['encoding']
-            content = file_content.decode(encoding)
-
+        content = read_file_content(file_obj)
+    
     # 如果用户输入不为空，则将其附加到文件内容后面
     if user_input.strip():
         content += "\n" + user_input
